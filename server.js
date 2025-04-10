@@ -8,7 +8,7 @@ app.use(cors());
 app.use(bodyParser.json());
 
 // Connect to MongoDB
-mongoose.connect('mongodb+srv://amsakshamgupta:admin1234@cluster0.z20foql.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0', {
+mongoose.connect('mongodb+srv://amsakshamgupta:admin1234@cluster0.z20foql.mongodb.net/emergency_app?retryWrites=true&w=majority&appName=Cluster0', {
   useNewUrlParser: true,
   useUnifiedTopology: true
 }).then(() => console.log("MongoDB Connected"))
@@ -20,7 +20,7 @@ const VolunteerSchema = new mongoose.Schema({
   contact: String,
   message: String
 });
-const Volunteer = mongoose.model('Volunteer', VolunteerSchema);
+const Volunteer = mongoose.model('Volunteer', VolunteerSchema, 'volunteers');
 
 // Route to save volunteer
 app.post('/api/volunteers', async (req, res) => {
