@@ -17,7 +17,11 @@ mongoose.connect('mongodb+srv://amsakshamgupta:admin1234@cluster0.z20foql.mongod
 // Volunteer Schema
 const VolunteerSchema = new mongoose.Schema({
   name: String,
-  contact: String,
+  contact: {
+    type: String,
+    unique: true,
+    required: true
+  },
   message: String
 });
 const Volunteer = mongoose.model('Volunteer', VolunteerSchema, 'volunteers');
@@ -26,6 +30,10 @@ const Volunteer = mongoose.model('Volunteer', VolunteerSchema, 'volunteers');
 app.post('/api/volunteers', async (req, res) => {
   try {
     const { name, contact, message } = req.body;
+    const existing = await Volunteer.findOne({ contact });
+    if (existing) {
+      return res.status(400).json({ success: false, message: "Contact already exists." });
+    }
     const newVolunteer = new Volunteer({ name, contact, message });
     await newVolunteer.save();
     res.status(201).json({ success: true, message: "Volunteer saved!" });
