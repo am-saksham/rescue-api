@@ -42,4 +42,19 @@ app.post('/api/volunteers', async (req, res) => {
   }
 });
 
+app.get('/api/volunteers/:contact', async (req, res) => {
+  try {
+    const contact = req.params.contact;
+    const existing = await Volunteer.findOne({ contact });
+
+    if (existing) {
+      res.status(200).json({ exists: true });
+    } else {
+      res.status(404).json({ exists: false });
+    }
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 app.listen(5000, () => console.log("Server running on port 5000"));
