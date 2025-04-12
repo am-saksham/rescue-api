@@ -22,7 +22,17 @@ const VolunteerSchema = new mongoose.Schema({
     unique: true,
     required: true
   },
-  message: String
+  message: String,
+  locations: [
+    {
+      latitude: Number,
+      longitude: Number,
+      timestamp: {
+        type: Date,
+        default: Date.now
+      }
+    }
+  ]
 });
 const Volunteer = mongoose.model('Volunteer', VolunteerSchema, 'volunteers');
 
@@ -52,6 +62,32 @@ app.get('/api/volunteers/:contact', async (req, res) => {
     } else {
       res.status(404).json({ exists: false });
     }
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.put('/api/volunteers/location', async (req, res) => {
+  try {
+    const { contact, latitude, longitude } = req.body;
+    const timestamp = new Date();
+
+    const volunteer = await Volunteer.findOne({ contact });
+    if (!volunteer) {
+      return res.status(404).json({ success: false, message: 'Volunteer not found' });
+    }
+
+    // Push the new location to the beginning of the array
+    volunteer.locations.unshift({ latitude, longitude, timestamp });
+
+    // Keep only the latest 5 locations
+    if (volunteer.locations.length > 5) {
+      volunteer.locations = volunteer.locations.slice(0, 5);
+    }
+
+    await volunteer.save();
+
+    res.json({ success: true, message: 'Location updated', locations: volunteer.locations });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }
