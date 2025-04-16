@@ -11,6 +11,9 @@ const { body, validationResult } = require('express-validator');
 
 const app = express();
 
+// Trust proxy in production environment
+app.set('trust proxy', true);
+
 // Configuration
 const CLOUDINARY_CONFIG = {
   cloud_name: 'dbxdejufj',
@@ -56,7 +59,8 @@ const VolunteerSchema = new mongoose.Schema({
     validate: {
       validator: v => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v),
       message: props => `${props.value} is not a valid email!`
-    }
+    },
+    set: email => email.toLowerCase() // Only lowercase, preserve dots
   },
   message: { type: String, required: true },
   ip_address: String,
@@ -66,7 +70,10 @@ const VolunteerSchema = new mongoose.Schema({
     longitude: { type: Number, required: true },
     timestamp: { type: Date, default: Date.now }
   }]
-}, { timestamps: true }, { autoIndex: true });
+}, { 
+  timestamps: true,
+  autoIndex: true 
+});
 
 VolunteerSchema.index({ email: 1 });
 VolunteerSchema.index({ 'locations.timestamp': -1 });
@@ -80,15 +87,21 @@ const upload = multer({
   limits: { fileSize: 5 * 1024 * 1024 } // 5MB limit
 });
 
-// Rate limiting
+// Rate limiting with proxy support
 const apiLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100
+  max: 100,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => req.ip
 });
 
 const locationUpdateLimiter = rateLimit({
   windowMs: 60 * 1000, // 1 minute
-  max: 60
+  max: 60,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => req.ip
 });
 
 // Routes
@@ -103,6 +116,35 @@ app.get('/api/health', (req, res) => {
 
 app.get('/', (req, res) => {
   res.send('API is up and running 🚀');
+});
+
+// Get volunteer by ID endpoint
+app.get('/api/volunteers/:id', async (req, res) => {
+  try {
+    const volunteer = await Volunteer.findById(req.params.id);
+    
+    if (!volunteer) {
+      return res.status(404).json({ 
+        success: false,
+        message: 'Volunteer not found' 
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      data: {
+        _id: volunteer._id,
+        email: volunteer.email,
+        name: volunteer.name,
+        image: volunteer.image
+      }
+    });
+  } catch (err) {
+    res.status(500).json({ 
+      success: false, 
+      error: err.message 
+    });
+  }
 });
 
 app.post('/api/volunteers/:volunteerId/photo', upload.single('image'), async (req, res) => {
@@ -132,15 +174,23 @@ app.post('/api/volunteers/:volunteerId/photo', upload.single('image'), async (re
     volunteer.image = imageUrl;
     await volunteer.save();
 
-    res.status(200).json({ success: true, message: 'Image uploaded successfully', imageUrl });
+    res.status(200).json({ 
+      success: true, 
+      message: 'Image uploaded successfully', 
+      imageUrl,
+      email: volunteer.email // Include email in response
+    });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    res.status(500).json({ 
+      success: false, 
+      error: err.message 
+    });
   }
 });
 
 app.post('/api/volunteers', upload.single('image'), [
   body('name').trim().notEmpty().withMessage('Name is required'),
-  body('email').trim().isEmail().normalizeEmail().withMessage('Valid email is required'),
+  body('email').trim().isEmail().withMessage('Valid email is required'), // Removed normalizeEmail()
   body('message').trim().notEmpty().withMessage('Message is required')
 ], async (req, res) => {
   try {
@@ -168,14 +218,17 @@ app.post('/api/volunteers', upload.single('image'), [
     let imageUrl = '';
     if (req.file) {
       try {
-        const result = await cloudinary.uploader.upload_stream(
-          { resource_type: 'image' },
-          (error, result) => {
-            if (error) throw error;
-            return result.secure_url;
-          }
-        ).end(req.file.buffer);
-        imageUrl = result.secure_url;
+        const uploadResult = await new Promise((resolve, reject) => {
+          const stream = cloudinary.uploader.upload_stream(
+            { resource_type: 'image' },
+            (error, result) => {
+              if (error) reject(error);
+              resolve(result);
+            }
+          );
+          stream.end(req.file.buffer);
+        });
+        imageUrl = uploadResult.secure_url;
       } catch (uploadError) {
         console.error('Image upload error:', uploadError);
         return res.status(500).json({ 
@@ -199,10 +252,9 @@ app.post('/api/volunteers', upload.single('image'), [
     res.status(201).json({ 
       success: true, 
       message: "Volunteer registered successfully", 
-      _id: newVolunteer._id,  // Moved to root level
+      _id: newVolunteer._id,
       name: newVolunteer.name,
       email: newVolunteer.email
-      // Removed the nested 'data' object
     });
 
   } catch (err) {
@@ -221,7 +273,11 @@ app.get('/api/volunteers/:email', async (req, res) => {
     const existing = await Volunteer.findOne({ email });
 
     if (existing) {
-      res.status(200).json({ exists: true });
+      res.status(200).json({ 
+        exists: true,
+        _id: existing._id,
+        email: existing.email
+      });
     } else {
       res.status(404).json({ exists: false });
     }
@@ -267,7 +323,8 @@ app.put('/api/volunteers/location',
       res.json({ 
         success: true, 
         message: 'Location updated', 
-        locations: result.locations 
+        locations: result.locations,
+        email: result.email
       });
     } catch (err) {
       res.status(500).json({ success: false, error: err.message });
@@ -279,9 +336,11 @@ app.use((err, req, res, next) => {
   console.error(err.stack);
   res.status(500).json({ 
     success: false, 
-    error: 'Something went wrong!',
-    message: 'development' === 'development' ? err.message : undefined
+    error: 'Internal server error',
   });
 });
 
-app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
+  console.log(`Environment: production`);
+});
