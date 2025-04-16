@@ -3,7 +3,6 @@ const mongoose = require('mongoose');
 const cors = require('cors');
 const bodyParser = require('body-parser');
 const multer = require('multer');
-const path = require('path');
 const cloudinary = require('cloudinary').v2;
 const rateLimit = require('express-rate-limit');
 const helmet = require('helmet');
@@ -12,68 +11,83 @@ const { body, validationResult } = require('express-validator');
 
 const app = express();
 
-// Hardcoded configuration
-const CLOUDINARY_CLOUD_NAME = 'dbxdejufj';
-const CLOUDINARY_API_KEY = '512749837966285';
-const CLOUDINARY_API_SECRET = 'U4hJhTUtnaj-gr5WasOgrP0D4XY';
+// Configuration
+const CLOUDINARY_CONFIG = {
+  cloud_name: 'dbxdejufj',
+  api_key: '512749837966285',
+  api_secret: 'U4hJhTUtnaj-gr5WasOgrP0D4XY'
+};
+
 const MONGODB_URI = 'mongodb+srv://amsakshamgupta:admin1234@cluster0.z20foql.mongodb.net/emergency_app?retryWrites=true&w=majority&appName=Cluster0';
-const PORT = 5000; // or any other port you want to use
+const PORT = 5000;
 
 // Middleware
 app.use(helmet());
-app.use(morgan('combined'));
-app.use(cors({ origin: '*' }));
-app.use(bodyParser.json());
+app.use(morgan('dev'));
+app.use(cors({
+  origin: '*',
+  methods: ['GET', 'POST', 'PUT'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+}));
+app.use(bodyParser.json({ limit: '10mb' }));
+app.use(bodyParser.urlencoded({ extended: true }));
 
 // Cloudinary Configuration
-cloudinary.config({
-  cloud_name: CLOUDINARY_CLOUD_NAME,
-  api_key: CLOUDINARY_API_KEY,
-  api_secret: CLOUDINARY_API_SECRET
-});
+cloudinary.config(CLOUDINARY_CONFIG);
 
 // MongoDB Connection
 mongoose.connect(MONGODB_URI, {
   useNewUrlParser: true,
-  useUnifiedTopology: true
-}).then(() => console.log("MongoDB Connected"))
-  .catch(err => console.log(err));
+  useUnifiedTopology: true,
+  retryWrites: true,
+  w: 'majority'
+})
+.then(() => console.log("MongoDB Connected Successfully"))
+.catch(err => console.error("MongoDB Connection Error:", err));
 
 // Volunteer Schema
 const VolunteerSchema = new mongoose.Schema({
-  name: String,
-  email: {
-    type: String,
+  name: { type: String, required: true },
+  email: { 
+    type: String, 
+    required: true,
     unique: true,
-    required: true
+    validate: {
+      validator: (v) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v),
+      message: props => `${props.value} is not a valid email address!`
+    }
   },
-  message: String,
+  message: { type: String, required: true },
   ip_address: String,
   image: String,
-  locations: [
-    {
-      latitude: Number,
-      longitude: Number,
-      timestamp: {
-        type: Date,
-        default: Date.now
-      }
-    }
-  ]
-});
-VolunteerSchema.index({ email : 1 });
+  locations: [{
+    latitude: { type: Number, required: true },
+    longitude: { type: Number, required: true },
+    timestamp: { type: Date, default: Date.now }
+  }]
+}, { timestamps: true });
+
+VolunteerSchema.index({ email: 1 });
 VolunteerSchema.index({ 'locations.timestamp': -1 });
-const Volunteer = mongoose.model('Volunteer', VolunteerSchema, 'volunteers');
+
+const Volunteer = mongoose.model('Volunteer', VolunteerSchema);
 
 // Multer setup
 const storage = multer.memoryStorage();
-const upload = multer({ storage: storage });
+const upload = multer({ 
+  storage: storage,
+  limits: { fileSize: 5 * 1024 * 1024 } // 5MB limit
+});
 
 // Rate limiting
+const apiLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 100
+});
+
 const locationUpdateLimiter = rateLimit({
-  windowMs: 60 * 1000,
-  max: 60,
-  message: 'Too many location updates from this IP, please try again later'
+  windowMs: 60 * 1000, // 1 minute
+  max: 60
 });
 
 // Routes
@@ -81,7 +95,8 @@ app.get('/api/health', (req, res) => {
   res.status(200).json({
     status: 'OK',
     timestamp: new Date(),
-    uptime: process.uptime()
+    uptime: process.uptime(),
+    database: mongoose.connection.readyState === 1 ? 'Connected' : 'Disconnected'
   });
 });
 
@@ -122,31 +137,54 @@ app.post('/api/volunteers/:volunteerId/photo', upload.single('image'), async (re
   }
 });
 
-app.post('/api/volunteers', upload.single('image'), async (req, res) => {
+app.post('/api/volunteers', upload.single('image'), [
+  body('name').trim().notEmpty().withMessage('Name is required'),
+  body('email').trim().isEmail().normalizeEmail().withMessage('Valid email is required'),
+  body('message').trim().notEmpty().withMessage('Message is required')
+], async (req, res) => {
   try {
-    const { name, email , message } = req.body;
-    const ip_address = req.headers['x-forwarded-for'] || req.connection.remoteAddress;
-
-    const existing = await Volunteer.findOne({ email });
-    if (existing) {
-      return res.status(400).json({ success: false, message: "Email Id already exists." });
-    }
-
-    let imageUrl = '';
-
-    if (req.file) {
-      imageUrl = await new Promise((resolve, reject) => {
-        const stream = cloudinary.uploader.upload_stream(
-          { resource_type: 'image' },
-          (error, result) => {
-            if (error) return reject(error);
-            resolve(result.secure_url);
-          }
-        );
-        stream.end(req.file.buffer);
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ 
+        success: false, 
+        errors: errors.array() 
       });
     }
 
+    const { name, email, message } = req.body;
+    const ip_address = req.headers['x-forwarded-for'] || req.ip;
+
+    // Check for existing volunteer
+    const existing = await Volunteer.findOne({ email });
+    if (existing) {
+      return res.status(400).json({ 
+        success: false, 
+        message: "Email already registered" 
+      });
+    }
+
+    // Handle image upload if present
+    let imageUrl = '';
+    if (req.file) {
+      try {
+        const result = await cloudinary.uploader.upload_stream(
+          { resource_type: 'image' },
+          (error, result) => {
+            if (error) throw error;
+            return result.secure_url;
+          }
+        ).end(req.file.buffer);
+        imageUrl = result.secure_url;
+      } catch (uploadError) {
+        console.error('Image upload error:', uploadError);
+        return res.status(500).json({ 
+          success: false, 
+          message: 'Image upload failed' 
+        });
+      }
+    }
+
+    // Create new volunteer
     const newVolunteer = new Volunteer({
       name,
       email,
@@ -156,13 +194,24 @@ app.post('/api/volunteers', upload.single('image'), async (req, res) => {
     });
 
     await newVolunteer.save();
+    
     res.status(201).json({ 
       success: true, 
-      message: "Volunteer saved!", 
-      _id: newVolunteer._id 
+      message: "Volunteer registered successfully", 
+      data: {
+        _id: newVolunteer._id,
+        name: newVolunteer.name,
+        email: newVolunteer.email
+      }
     });
+
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    console.error('Volunteer registration error:', err);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Registration failed',
+      error: err.message 
+    });
   }
 });
 
