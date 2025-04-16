@@ -42,7 +42,7 @@ mongoose.connect(MONGODB_URI, {
 // Volunteer Schema
 const VolunteerSchema = new mongoose.Schema({
   name: String,
-  contact: {
+  email: {
     type: String,
     unique: true,
     required: true
@@ -61,7 +61,7 @@ const VolunteerSchema = new mongoose.Schema({
     }
   ]
 });
-VolunteerSchema.index({ contact: 1 });
+VolunteerSchema.index({ email : 1 });
 VolunteerSchema.index({ 'locations.timestamp': -1 });
 const Volunteer = mongoose.model('Volunteer', VolunteerSchema, 'volunteers');
 
@@ -124,12 +124,12 @@ app.post('/api/volunteers/:volunteerId/photo', upload.single('image'), async (re
 
 app.post('/api/volunteers', upload.single('image'), async (req, res) => {
   try {
-    const { name, contact, message } = req.body;
+    const { name, email , message } = req.body;
     const ip_address = req.headers['x-forwarded-for'] || req.connection.remoteAddress;
 
-    const existing = await Volunteer.findOne({ contact });
+    const existing = await Volunteer.findOne({ email });
     if (existing) {
-      return res.status(400).json({ success: false, message: "Contact already exists." });
+      return res.status(400).json({ success: false, message: "Email Id already exists." });
     }
 
     let imageUrl = '';
@@ -149,7 +149,7 @@ app.post('/api/volunteers', upload.single('image'), async (req, res) => {
 
     const newVolunteer = new Volunteer({
       name,
-      contact,
+      email,
       message,
       ip_address,
       image: imageUrl,
@@ -166,10 +166,10 @@ app.post('/api/volunteers', upload.single('image'), async (req, res) => {
   }
 });
 
-app.get('/api/volunteers/:contact', async (req, res) => {
+app.get('/api/volunteers/:email', async (req, res) => {
   try {
-    const contact = req.params.contact;
-    const existing = await Volunteer.findOne({ contact });
+    const email = req.params.email;
+    const existing = await Volunteer.findOne({ email });
 
     if (existing) {
       res.status(200).json({ exists: true });
@@ -184,7 +184,7 @@ app.get('/api/volunteers/:contact', async (req, res) => {
 app.put('/api/volunteers/location', 
   locationUpdateLimiter,
   [
-    body('contact').notEmpty().isString(),
+    body('email').notEmpty().isString(),
     body('latitude').isFloat({ min: -90, max: 90 }),
     body('longitude').isFloat({ min: -180, max: 180 })
   ],
@@ -195,10 +195,10 @@ app.put('/api/volunteers/location',
     }
 
     try {
-      const { contact, latitude, longitude } = req.body;
+      const { email, latitude, longitude } = req.body;
       
       const result = await Volunteer.findOneAndUpdate(
-        { contact },
+        { email },
         {
           $push: {
             locations: {
