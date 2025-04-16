@@ -48,13 +48,14 @@ mongoose.connect(MONGODB_URI, {
 // Volunteer Schema
 const VolunteerSchema = new mongoose.Schema({
   name: { type: String, required: true },
-  email: { 
-    type: String, 
-    required: true,
+  email: {
+    type: String,
+    required: [true, 'Email is required'],
     unique: true,
+    index: true,
     validate: {
-      validator: (v) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v),
-      message: props => `${props.value} is not a valid email address!`
+      validator: v => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v),
+      message: props => `${props.value} is not a valid email!`
     }
   },
   message: { type: String, required: true },
@@ -65,7 +66,7 @@ const VolunteerSchema = new mongoose.Schema({
     longitude: { type: Number, required: true },
     timestamp: { type: Date, default: Date.now }
   }]
-}, { timestamps: true });
+}, { timestamps: true }, { autoIndex: true });
 
 VolunteerSchema.index({ email: 1 });
 VolunteerSchema.index({ 'locations.timestamp': -1 });
