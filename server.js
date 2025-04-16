@@ -85,6 +85,10 @@ app.get('/api/health', (req, res) => {
   });
 });
 
+app.get('/', (req, res) => {
+  res.send('API is up and running 🚀');
+});
+
 app.post('/api/volunteers/:volunteerId/photo', upload.single('image'), async (req, res) => {
   try {
     const volunteerId = req.params.volunteerId;
