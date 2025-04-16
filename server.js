@@ -66,8 +66,15 @@ const VolunteerSchema = new mongoose.Schema({
   ip_address: String,
   image: String,
   locations: [{
-    latitude: { type: Number, required: true },
-    longitude: { type: Number, required: true },
+    type: {
+      type: String,
+      default: 'Point',
+      enum: ['Point']
+    },
+    coordinates: {
+      type: [Number], // [longitude, latitude]
+      required: true
+    },
     timestamp: { type: Date, default: Date.now }
   }]
 }, { 
@@ -75,6 +82,7 @@ const VolunteerSchema = new mongoose.Schema({
   autoIndex: true 
 });
 
+VolunteerSchema.index({ locations: '2dsphere' });
 VolunteerSchema.index({ email: 1 });
 VolunteerSchema.index({ 'locations.timestamp': -1 });
 
@@ -283,6 +291,113 @@ app.get('/api/volunteers/email/:email', async (req, res) => {
     }
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// Add these new endpoints to your Express server
+
+// Emergency Help Request Endpoint
+app.post('/api/emergency/request-help', [
+  body('latitude').isFloat({ min: -90, max: 90 }),
+  body('longitude').isFloat({ min: -180, max: 180 }),
+  body('radius').isInt({ min: 1, max: 50 }),
+  body('ip_address').isIP()
+], async (req, res) => {
+  try {
+    const { latitude, longitude, radius, ip_address } = req.body;
+    
+    // Find volunteers within radius (using MongoDB geospatial query)
+    const volunteers = await Volunteer.aggregate([
+      {
+        $geoNear: {
+          near: {
+            type: "Point",
+            coordinates: [longitude, latitude]
+          },
+          distanceField: "distance",
+          maxDistance: radius * 1000, // Convert km to meters
+          spherical: true,
+          query: { 
+            ip_address: { $ne: ip_address } // Exclude victim's own IP
+          }
+        }
+      },
+      { $limit: 20 }, // Limit results
+      { $sort: { distance: 1 } } // Sort by nearest first
+    ]);
+
+    if (volunteers.length === 0) {
+      return res.status(404).json({ 
+        success: false,
+        message: 'No volunteers found in your area'
+      });
+    }
+
+    // Here you would send push notifications to volunteers
+    // This is a placeholder - implement your actual notification system
+    await _sendNotificationsToVolunteers(volunteers);
+
+    res.status(200).json({ 
+      success: true,
+      message: 'Help request sent to volunteers',
+      volunteers_notified: volunteers.length
+    });
+
+  } catch (err) {
+    res.status(500).json({ 
+      success: false, 
+      error: err.message 
+    });
+  }
+});
+
+// Helper function to send notifications
+async function _sendNotificationsToVolunteers(volunteers) {
+  // Implement your actual notification system here
+  // This could use Firebase Cloud Messaging, OneSignal, etc.
+  console.log(`Would send notifications to ${volunteers.length} volunteers`);
+}
+
+// Volunteer Response Endpoint
+app.post('/api/emergency/respond', [
+  body('volunteer_id').isMongoId(),
+  body('accept').isBoolean()
+], async (req, res) => {
+  try {
+    const { volunteer_id, accept } = req.body;
+    
+    const volunteer = await Volunteer.findById(volunteer_id);
+    if (!volunteer) {
+      return res.status(404).json({ 
+        success: false,
+        message: 'Volunteer not found'
+      });
+    }
+
+    if (accept) {
+      // Save the volunteer's response for the next screen
+      // You might want to store this in a separate collection
+      // or add to the volunteer's record
+      res.status(200).json({ 
+        success: true,
+        message: 'Thank you for helping!',
+        volunteer: {
+          _id: volunteer._id,
+          name: volunteer.name,
+          image: volunteer.image
+        }
+      });
+    } else {
+      res.status(200).json({ 
+        success: true,
+        message: 'Response recorded'
+      });
+    }
+  } catch (err) {
+    res.status(500).json({ 
+      success: false, 
+      error: err.message 
+    });
   }
 });
 
