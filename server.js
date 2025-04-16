@@ -5,22 +5,37 @@ const bodyParser = require('body-parser');
 const multer = require('multer');
 const path = require('path');
 const cloudinary = require('cloudinary').v2;
+const rateLimit = require('express-rate-limit');
+const helmet = require('helmet');
+const xss = require('xss-clean');
+const morgan = require('morgan');
+const { body, validationResult } = require('express-validator');
 
 const app = express();
-app.use(cors({
-  origin: '*', // or specify your frontend URL here
-}));
+
+// Hardcoded configuration
+const CLOUDINARY_CLOUD_NAME = 'dbxdejufj';
+const CLOUDINARY_API_KEY = '512749837966285';
+const CLOUDINARY_API_SECRET = 'U4hJhTUtnaj-gr5WasOgrP0D4XY';
+const MONGODB_URI = 'mongodb+srv://amsakshamgupta:admin1234@cluster0.z20foql.mongodb.net/emergency_app?retryWrites=true&w=majority&appName=Cluster0';
+const PORT = 5000; // or any other port you want to use
+
+// Middleware
+app.use(helmet());
+app.use(xss());
+app.use(morgan('combined'));
+app.use(cors({ origin: '*' }));
 app.use(bodyParser.json());
 
-// Cloudinary Configuration (You can use other storage options like AWS S3)
+// Cloudinary Configuration
 cloudinary.config({
-  cloud_name: 'dbxdejufj',
-  api_key: '512749837966285',
-  api_secret: 'U4hJhTUtnaj-gr5WasOgrP0D4XY',
+  cloud_name: CLOUDINARY_CLOUD_NAME,
+  api_key: CLOUDINARY_API_KEY,
+  api_secret: CLOUDINARY_API_SECRET
 });
 
-// Connect to MongoDB
-mongoose.connect('mongodb+srv://amsakshamgupta:admin1234@cluster0.z20foql.mongodb.net/emergency_app?retryWrites=true&w=majority&appName=Cluster0', {
+// MongoDB Connection
+mongoose.connect(MONGODB_URI, {
   useNewUrlParser: true,
   useUnifiedTopology: true
 }).then(() => console.log("MongoDB Connected"))
@@ -36,7 +51,7 @@ const VolunteerSchema = new mongoose.Schema({
   },
   message: String,
   ip_address: String,
-  image: String, // The image field will store the image URL
+  image: String,
   locations: [
     {
       latitude: Number,
@@ -48,14 +63,29 @@ const VolunteerSchema = new mongoose.Schema({
     }
   ]
 });
+VolunteerSchema.index({ contact: 1 });
+VolunteerSchema.index({ 'locations.timestamp': -1 });
 const Volunteer = mongoose.model('Volunteer', VolunteerSchema, 'volunteers');
 
-// Set up multer for handling image uploads
-const storage = multer.memoryStorage(); // Store images in memory
+// Multer setup
+const storage = multer.memoryStorage();
 const upload = multer({ storage: storage });
 
-// Route to save volunteer with image
-// Route to upload volunteer photo
+// Rate limiting
+const locationUpdateLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 60,
+  message: 'Too many location updates from this IP, please try again later'
+});
+
+// Routes
+app.get('/api/health', (req, res) => {
+  res.status(200).json({
+    status: 'OK',
+    timestamp: new Date(),
+    uptime: process.uptime()
+  });
+});
 
 app.post('/api/volunteers/:volunteerId/photo', upload.single('image'), async (req, res) => {
   try {
@@ -81,7 +111,7 @@ app.post('/api/volunteers/:volunteerId/photo', upload.single('image'), async (re
       });
     }
 
-    volunteer.image = imageUrl; // Save the image URL to the volunteer's record
+    volunteer.image = imageUrl;
     await volunteer.save();
 
     res.status(200).json({ success: true, message: 'Image uploaded successfully', imageUrl });
@@ -93,17 +123,15 @@ app.post('/api/volunteers/:volunteerId/photo', upload.single('image'), async (re
 app.post('/api/volunteers', upload.single('image'), async (req, res) => {
   try {
     const { name, contact, message } = req.body;
-    const ip_address = req.headers['x-forwarded-for'] || req.connection.remoteAddress; // Get the IP address from request
+    const ip_address = req.headers['x-forwarded-for'] || req.connection.remoteAddress;
 
-    // Check if contact already exists
     const existing = await Volunteer.findOne({ contact });
     if (existing) {
       return res.status(400).json({ success: false, message: "Contact already exists." });
     }
 
-    let imageUrl = ''; // Default value
+    let imageUrl = '';
 
-    // If an image is provided, upload it to Cloudinary
     if (req.file) {
       imageUrl = await new Promise((resolve, reject) => {
         const stream = cloudinary.uploader.upload_stream(
@@ -122,17 +150,20 @@ app.post('/api/volunteers', upload.single('image'), async (req, res) => {
       contact,
       message,
       ip_address,
-      image: imageUrl, // Save the image URL
+      image: imageUrl,
     });
 
     await newVolunteer.save();
-    res.status(201).json({ success: true, message: "Volunteer saved!", _id: newVolunteer._id });
+    res.status(201).json({ 
+      success: true, 
+      message: "Volunteer saved!", 
+      _id: newVolunteer._id 
+    });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }
 });
 
-// Route to get volunteer by contact
 app.get('/api/volunteers/:contact', async (req, res) => {
   try {
     const contact = req.params.contact;
@@ -148,31 +179,58 @@ app.get('/api/volunteers/:contact', async (req, res) => {
   }
 });
 
-// Route to update volunteer location
-app.put('/api/volunteers/location', async (req, res) => {
-  try {
-    const { contact, latitude, longitude } = req.body;
-    const timestamp = new Date();
-
-    const volunteer = await Volunteer.findOne({ contact });
-    if (!volunteer) {
-      return res.status(404).json({ success: false, message: 'Volunteer not found' });
+app.put('/api/volunteers/location', 
+  locationUpdateLimiter,
+  [
+    body('contact').notEmpty().isString(),
+    body('latitude').isFloat({ min: -90, max: 90 }),
+    body('longitude').isFloat({ min: -180, max: 180 })
+  ],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ errors: errors.array() });
     }
 
-    // Push the new location to the beginning of the array
-    volunteer.locations.unshift({ latitude, longitude, timestamp });
+    try {
+      const { contact, latitude, longitude } = req.body;
+      
+      const result = await Volunteer.findOneAndUpdate(
+        { contact },
+        {
+          $push: {
+            locations: {
+              $each: [{ latitude, longitude, timestamp: new Date() }],
+              $slice: 5,
+              $sort: { timestamp: -1 }
+            }
+          }
+        },
+        { new: true }
+      );
 
-    // Keep only the latest 5 locations
-    if (volunteer.locations.length > 5) {
-      volunteer.locations = volunteer.locations.slice(0, 5);
+      if (!result) {
+        return res.status(404).json({ success: false, message: 'Volunteer not found' });
+      }
+
+      res.json({ 
+        success: true, 
+        message: 'Location updated', 
+        locations: result.locations 
+      });
+    } catch (err) {
+      res.status(500).json({ success: false, error: err.message });
     }
-
-    await volunteer.save();
-
-    res.json({ success: true, message: 'Location updated', locations: volunteer.locations });
-  } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
-  }
 });
 
-app.listen(5000, () => console.log("Server running on port 5000"));
+// Error handling middleware
+app.use((err, req, res, next) => {
+  console.error(err.stack);
+  res.status(500).json({ 
+    success: false, 
+    error: 'Something went wrong!',
+    message: 'development' === 'development' ? err.message : undefined
+  });
+});
+
+app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
