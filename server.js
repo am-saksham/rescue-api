@@ -7,7 +7,6 @@ const path = require('path');
 const cloudinary = require('cloudinary').v2;
 const rateLimit = require('express-rate-limit');
 const helmet = require('helmet');
-const xss = require('xss-clean');
 const morgan = require('morgan');
 const { body, validationResult } = require('express-validator');
 
@@ -22,7 +21,6 @@ const PORT = 5000; // or any other port you want to use
 
 // Middleware
 app.use(helmet());
-app.use(xss());
 app.use(morgan('combined'));
 app.use(cors({ origin: '*' }));
 app.use(bodyParser.json());
