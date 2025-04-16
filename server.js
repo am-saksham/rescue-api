@@ -267,7 +267,7 @@ app.post('/api/volunteers', upload.single('image'), [
   }
 });
 
-app.get('/api/volunteers/:email', async (req, res) => {
+app.get('/api/volunteers/email/:email', async (req, res) => {
   try {
     const email = req.params.email;
     const existing = await Volunteer.findOne({ email });
