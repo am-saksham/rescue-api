@@ -259,6 +259,142 @@ app.put('/api/volunteers/location', locationUpdateLimiter, [
   }
 });
 
+// Add to your routes section
+app.get('/api/emergency/route', async (req, res) => {
+  try {
+    const { request_id, current_lat, current_lng } = req.query;
+    
+    // Validate inputs
+    if (!request_id || !current_lat || !current_lng) {
+      return res.status(400).json({ 
+        success: false,
+        message: 'Missing required parameters' 
+      });
+    }
+
+    // Get the emergency request
+    const request = await EmergencyRequest.findById(request_id)
+      .populate('volunteers_notified.volunteer_id', 'name image location');
+
+    if (!request) {
+      return res.status(404).json({ 
+        success: false,
+        message: 'Emergency request not found' 
+      });
+    }
+
+    // Find the accepted volunteer
+    const acceptedVolunteer = request.volunteers_notified.find(
+      v => v.response === 'accepted'
+    );
+
+    if (!acceptedVolunteer) {
+      return res.status(404).json({ 
+        success: false,
+        message: 'No accepted volunteer found' 
+      });
+    }
+
+    const volunteer = acceptedVolunteer.volunteer_id;
+    const volunteerLocation = volunteer.location.coordinates;
+
+    // Calculate route using Google Maps Directions API
+    const googleMapsApiKey = "YOUR_GOOGLE_MAPS_API_KEY";
+    const directionsUrl = `https://maps.googleapis.com/maps/api/directions/json?` +
+      `origin=${current_lat},${current_lng}&` +
+      `destination=${volunteerLocation[1]},${volunteerLocation[0]}&` +
+      `key=${googleMapsApiKey}`;
+
+    const directionsResponse = await http.get(directionsUrl);
+    const directionsData = json.decode(directionsResponse.body);
+
+    if (directionsData.status !== 'OK') {
+      return res.status(400).json({ 
+        success: false,
+        message: 'Could not calculate route' 
+      });
+    }
+
+    // Extract route information
+    const route = directionsData.routes[0].legs[0];
+    const polyline = directionsData.routes[0].overview_polyline.points;
+
+    res.status(200).json({
+      success: true,
+      distance: route.distance.text,
+      duration: route.duration.text,
+      polyline: polyline,
+      volunteer_id: volunteer._id,
+      volunteer_name: volunteer.name,
+      volunteer_image: volunteer.image,
+      volunteer_location: {
+        latitude: volunteerLocation[1],
+        longitude: volunteerLocation[0]
+      }
+    });
+
+  } catch (err) {
+    console.error('Route calculation error:', err);
+    res.status(500).json({ 
+      success: false, 
+      error: err.message 
+    });
+  }
+});
+
+app.post('/api/emergency/cancel', [
+  body('request_id').isMongoId(),
+  body('volunteer_id').isMongoId()
+], async (req, res) => {
+  try {
+    const { request_id, volunteer_id } = req.body;
+    
+    // Update the emergency request status
+    const updatedRequest = await EmergencyRequest.findOneAndUpdate(
+      {
+        _id: request_id,
+        'volunteers_notified.volunteer_id': volunteer_id,
+        status: 'active'
+      },
+      {
+        $set: {
+          status: 'cancelled',
+          'volunteers_notified.$.response': 'rejected'
+        }
+      },
+      { new: true }
+    );
+
+    if (!updatedRequest) {
+      return res.status(404).json({ 
+        success: false,
+        message: 'Request not found or already completed/cancelled' 
+      });
+    }
+
+    // Notify the volunteer
+    const volunteer = await Volunteer.findById(volunteer_id);
+    if (volunteer?.device_token) {
+      await sendPushNotification(
+        volunteer.device_token,
+        'The emergency request has been cancelled'
+      );
+    }
+
+    res.status(200).json({ 
+      success: true,
+      message: 'Request cancelled successfully'
+    });
+
+  } catch (err) {
+    console.error('Cancel request error:', err);
+    res.status(500).json({ 
+      success: false, 
+      error: err.message 
+    });
+  }
+});
+
 // Emergency Endpoints
 app.post('/api/emergency/request-help', [
   body('latitude').isFloat({ min: -90, max: 90 }),
@@ -378,7 +514,8 @@ app.post('/api/emergency/respond', [
         volunteerData = {
           _id: volunteer._id,
           name: volunteer.name,
-          image: volunteer.image
+          image: volunteer.image,
+          location: volunteer.location
         };
       }
     }
