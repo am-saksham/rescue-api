@@ -199,11 +199,10 @@ app.post('/api/volunteers', upload.single('image'), [
     res.status(201).json({ 
       success: true, 
       message: "Volunteer registered successfully", 
-      data: {
-        _id: newVolunteer._id,
-        name: newVolunteer.name,
-        email: newVolunteer.email
-      }
+      _id: newVolunteer._id,  // Moved to root level
+      name: newVolunteer.name,
+      email: newVolunteer.email
+      // Removed the nested 'data' object
     });
 
   } catch (err) {
