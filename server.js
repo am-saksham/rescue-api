@@ -68,16 +68,16 @@ app.post('/api/volunteers', upload.single('image'), async (req, res) => {
 
     // If an image is provided, upload it to Cloudinary
     if (req.file) {
-      const uploadResult = await cloudinary.uploader.upload_stream(
-        { resource_type: 'image' },
-        (error, result) => {
-          if (error) {
-            return res.status(500).json({ success: false, message: 'Image upload failed', error: error.message });
+      imageUrl = await new Promise((resolve, reject) => {
+        const stream = cloudinary.uploader.upload_stream(
+          { resource_type: 'image' },
+          (error, result) => {
+            if (error) return reject(error);
+            resolve(result.secure_url);
           }
-          imageUrl = result.secure_url; // The image URL after successful upload
-        }
-      );
-      uploadResult.end(req.file.buffer);
+        );
+        stream.end(req.file.buffer);
+      });
     }
 
     const newVolunteer = new Volunteer({
