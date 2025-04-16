@@ -7,7 +7,9 @@ const path = require('path');
 const cloudinary = require('cloudinary').v2;
 
 const app = express();
-app.use(cors());
+app.use(cors({
+  origin: '*', // or specify your frontend URL here
+}));
 app.use(bodyParser.json());
 
 // Cloudinary Configuration (You can use other storage options like AWS S3)
@@ -53,6 +55,41 @@ const storage = multer.memoryStorage(); // Store images in memory
 const upload = multer({ storage: storage });
 
 // Route to save volunteer with image
+// Route to upload volunteer photo
+
+app.post('/api/volunteers/:volunteerId/photo', upload.single('image'), async (req, res) => {
+  try {
+    const volunteerId = req.params.volunteerId;
+    const volunteer = await Volunteer.findById(volunteerId);
+    
+    if (!volunteer) {
+      return res.status(404).json({ success: false, message: 'Volunteer not found' });
+    }
+
+    let imageUrl = '';
+
+    if (req.file) {
+      imageUrl = await new Promise((resolve, reject) => {
+        const stream = cloudinary.uploader.upload_stream(
+          { resource_type: 'image' },
+          (error, result) => {
+            if (error) return reject(error);
+            resolve(result.secure_url);
+          }
+        );
+        stream.end(req.file.buffer);
+      });
+    }
+
+    volunteer.image = imageUrl; // Save the image URL to the volunteer's record
+    await volunteer.save();
+
+    res.status(200).json({ success: true, message: 'Image uploaded successfully', imageUrl });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 app.post('/api/volunteers', upload.single('image'), async (req, res) => {
   try {
     const { name, contact, message } = req.body;
@@ -89,7 +126,7 @@ app.post('/api/volunteers', upload.single('image'), async (req, res) => {
     });
 
     await newVolunteer.save();
-    res.status(201).json({ success: true, message: "Volunteer saved!" });
+    res.status(201).json({ success: true, message: "Volunteer saved!", _id: newVolunteer._id });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }
